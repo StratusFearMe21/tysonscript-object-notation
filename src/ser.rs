@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, io::Write};
+use std::{borrow::Cow, fmt::Display, io::Write, marker::PhantomData};
 
 use serde_core::{
     Serialize, Serializer,
@@ -11,7 +11,7 @@ use thiserror::Error;
 
 pub struct TsonSerializer<W: Write> {
     writer: W,
-    field_stack: Vec<&'static str>,
+    field_stack: Vec<Cow<'static, str>>,
 }
 
 #[derive(Debug, Error)]
@@ -20,6 +20,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("Map key must be stringable")]
     KeyMustBeStringable,
+    #[error("Map keys cannot be any kind of compound type")]
+    AlreadyCalled,
     #[error("Error during serialization: `{0}`")]
     Custom(String),
 }
@@ -94,7 +96,7 @@ impl<'a, W: Write> TsonSerializer<W> {
     where
         T: ?Sized + Serialize,
     {
-        self.field_stack.push(key);
+        self.field_stack.push(Cow::Borrowed(key));
         value.serialize(&mut *self)?;
         self.field_stack.pop();
 
@@ -191,8 +193,8 @@ impl<'a, W: Write> Serializer for &'a mut TsonSerializer<W> {
 
     fn serialize_unit_variant(
         self,
-        name: &'static str,
-        variant_index: u32,
+        _name: &'static str,
+        _variant_index: u32,
         variant: &'static str,
     ) -> Result<Self::Ok, Self::Error> {
         self.prefix_that_shit(b" ")?;
@@ -202,7 +204,7 @@ impl<'a, W: Write> Serializer for &'a mut TsonSerializer<W> {
 
     fn serialize_newtype_struct<T>(
         self,
-        name: &'static str,
+        _name: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error>
     where
@@ -213,8 +215,8 @@ impl<'a, W: Write> Serializer for &'a mut TsonSerializer<W> {
 
     fn serialize_newtype_variant<T>(
         self,
-        name: &'static str,
-        variant_index: u32,
+        _name: &'static str,
+        _variant_index: u32,
         variant: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error>
@@ -227,13 +229,18 @@ impl<'a, W: Write> Serializer for &'a mut TsonSerializer<W> {
         Ok(())
     }
 
-    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        if self.field_stack.last() == Some(&"") {
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        if self
+            .field_stack
+            .last()
+            .map(|f| f.is_empty())
+            .unwrap_or_default()
+        {
             self.prefix_that_variant_type_shit("fuckin")?;
         } else {
             self.prefix_that_shit(b"\n")?;
         }
-        self.field_stack.push("");
+        self.field_stack.push(Cow::Borrowed(""));
 
         Ok(self)
     }
@@ -244,7 +251,7 @@ impl<'a, W: Write> Serializer for &'a mut TsonSerializer<W> {
 
     fn serialize_tuple_struct(
         self,
-        name: &'static str,
+        _name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
         self.serialize_seq(Some(len))
@@ -252,26 +259,18 @@ impl<'a, W: Write> Serializer for &'a mut TsonSerializer<W> {
 
     fn serialize_tuple_variant(
         self,
-        name: &'static str,
-        variant_index: u32,
+        _name: &'static str,
+        _variant_index: u32,
         variant: &'static str,
-        len: usize,
+        _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
         self.prefix_that_variant_type_shit(variant)?;
-        self.field_stack.push("");
+        self.field_stack.push(Cow::Borrowed(""));
 
         Ok(self)
     }
 
-    fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        todo!()
-    }
-
-    fn serialize_struct(
-        self,
-        name: &'static str,
-        len: usize,
-    ) -> Result<Self::SerializeStruct, Self::Error> {
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
         if !self.field_stack.is_empty() {
             self.writer.write_all(b"\n")?;
         }
@@ -280,16 +279,207 @@ impl<'a, W: Write> Serializer for &'a mut TsonSerializer<W> {
         Ok(self)
     }
 
+    fn serialize_struct(
+        self,
+        _name: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeStruct, Self::Error> {
+        self.serialize_map(Some(len))
+    }
+
     fn serialize_struct_variant(
         self,
-        name: &'static str,
-        variant_index: u32,
+        _name: &'static str,
+        _variant_index: u32,
         variant: &'static str,
-        len: usize,
+        _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
         self.prefix_that_variant_type_shit(variant)?;
 
         Ok(self)
+    }
+}
+
+pub struct MapKeySerializer<'a, W: Write> {
+    field_stack: &'a mut Vec<Cow<'static, str>>,
+    called: bool,
+    writer: PhantomData<W>,
+}
+
+impl<'a, W: Write> MapKeySerializer<'a, W> {
+    fn push(&mut self, value: Cow<'static, str>) -> Result<(), Error> {
+        if self.called {
+            return Err(Error::AlreadyCalled);
+        }
+        if value.as_ref() == "in theory" || value.split_whitespace().count() > 1 {
+            return Err(Error::KeyMustBeStringable);
+        }
+        self.field_stack.push(value);
+        self.called = true;
+
+        Ok(())
+    }
+}
+
+macro_rules! serialize_key_value {
+    ($fn_name:ident, $v:ty) => {
+        fn $fn_name(self, v: $v) -> Result<Self::Ok, Self::Error> {
+            self.push(Cow::Owned(format!("{}", v)))
+        }
+    };
+}
+
+macro_rules! cannot_serialize {
+    ($fn_name:ident, $v:ty) => {
+        fn $fn_name(self, _v: $v) -> Result<Self::Ok, Self::Error> {
+            Err(Error::KeyMustBeStringable)
+        }
+    };
+}
+
+impl<'a, W: Write> Serializer for &'a mut MapKeySerializer<'a, W> {
+    type Ok = ();
+
+    type Error = Error;
+    type SerializeSeq = &'a mut TsonSerializer<W>;
+    type SerializeTuple = &'a mut TsonSerializer<W>;
+    type SerializeTupleStruct = &'a mut TsonSerializer<W>;
+    type SerializeTupleVariant = &'a mut TsonSerializer<W>;
+    type SerializeMap = &'a mut TsonSerializer<W>;
+    type SerializeStruct = &'a mut TsonSerializer<W>;
+    type SerializeStructVariant = &'a mut TsonSerializer<W>;
+
+    serialize_key_value!(serialize_i8, i8);
+    serialize_key_value!(serialize_i16, i16);
+    serialize_key_value!(serialize_i32, i32);
+    serialize_key_value!(serialize_i64, i64);
+    serialize_key_value!(serialize_u8, u8);
+    serialize_key_value!(serialize_u16, u16);
+    serialize_key_value!(serialize_u32, u32);
+    serialize_key_value!(serialize_u64, u64);
+    serialize_key_value!(serialize_f32, f32);
+    serialize_key_value!(serialize_f64, f64);
+    serialize_key_value!(serialize_char, char);
+    serialize_key_value!(serialize_str, &str);
+
+    cannot_serialize!(serialize_bytes, &[u8]);
+
+    fn serialize_bool(self, v: bool) -> Result<Self::Ok, Self::Error> {
+        if v {
+            self.push(Cow::Borrowed("true"))
+        } else {
+            self.push(Cow::Borrowed("false"))
+        }
+    }
+
+    fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
+        self.push(Cow::Borrowed("in theory"))
+    }
+
+    fn serialize_some<T>(self, value: &T) -> Result<Self::Ok, Self::Error>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(self)
+    }
+
+    fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
+        self.push(Cow::Borrowed("unit"))
+    }
+
+    fn serialize_unit_struct(self, name: &'static str) -> Result<Self::Ok, Self::Error> {
+        self.push(Cow::Borrowed(name))
+    }
+
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+    ) -> Result<Self::Ok, Self::Error> {
+        self.push(Cow::Borrowed(variant))
+    }
+
+    fn serialize_newtype_struct<T>(
+        self,
+        _name: &'static str,
+        value: &T,
+    ) -> Result<Self::Ok, Self::Error>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(&mut *self)
+    }
+
+    fn serialize_newtype_variant<T>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<Self::Ok, Self::Error>
+    where
+        T: ?Sized + Serialize,
+    {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn serialize_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStruct, Self::Error> {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant, Self::Error> {
+        Err(Error::KeyMustBeStringable)
+    }
+}
+
+impl<'a, W: Write> MapKeySerializer<'a, W> {
+    fn new(field_stack: &'a mut Vec<Cow<'static, str>>) -> MapKeySerializer<'a, W> {
+        Self {
+            field_stack,
+            called: false,
+            writer: PhantomData,
+        }
     }
 }
 
@@ -374,18 +564,20 @@ impl<'a, W: Write> SerializeMap for &'a mut TsonSerializer<W> {
     where
         T: ?Sized + Serialize,
     {
-        todo!()
+        key.serialize(&mut MapKeySerializer::<W>::new(&mut self.field_stack))
     }
 
     fn serialize_value<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
-        todo!()
+        value.serialize(&mut **self)?;
+        self.field_stack.pop();
+        Ok(())
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        todo!()
+        self.end_struct()
     }
 }
 

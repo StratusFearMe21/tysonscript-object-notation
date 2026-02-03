@@ -18,7 +18,7 @@ pub fn from_str<'a, T: Deserialize<'a>>(str: &'a str) -> Result<T, crate::de::Er
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
+    use std::{collections::HashMap, net::SocketAddr};
 
     use serde::{Deserialize, Serialize};
 
@@ -64,10 +64,20 @@ mod tests {
         more_colors: Vec<(Rgb, u8, Rgb)>,
         secret: Vec<u8>,
         cipher: Vec<Vec<u8>>,
+        map: HashMap<String, Rgb>,
+        true_map: HashMap<u64, bool>,
     }
 
     #[test]
     fn integration_test() {
+        let mut map = HashMap::new();
+        map.insert("red".to_owned(), Rgb::Rgb(255, 0, 0));
+        map.insert("green".to_owned(), Rgb::Rgb(0, 255, 0));
+        map.insert("blue".to_owned(), Rgb::Rgb(0, 0, 255));
+        let mut true_map = HashMap::new();
+        true_map.insert(42, true);
+        true_map.insert(67, false);
+        true_map.insert(69, true);
         let to_serialize = Cli {
             log_level: String::from("info"),
             addr: "0.0.0.0:8080".parse().unwrap(),
@@ -92,12 +102,13 @@ mod tests {
             more_colors: vec![(Rgb::Rgb(1, 2, 3), 5, Rgb::Rgb(4, 5, 6)); 2],
             secret: vec![14, 6, 7, 6, 87, 69, 78, 5, 6, 4, 64, 6, 45, 6],
             cipher: vec![vec![1, 2, 3], vec![4, 5, 6, 7, 8, 9], vec![10]],
+            map,
+            true_map,
         };
         let string = crate::to_string(&to_serialize).unwrap();
         println!("{}", string);
         let from_string: Cli = crate::from_str(string.as_str()).unwrap();
         println!("{:#?}", from_string);
-        // panic!();
 
         assert_eq!(to_serialize, from_string);
     }

@@ -24,6 +24,8 @@ pub enum Error {
     DuplicateField(&'static str),
     #[error("Unexpected EOF")]
     UnexpectedEof,
+    #[error("Map key must be stringable")]
+    KeyMustBeStringable,
     #[error("{0}")]
     Custom(String),
 }
@@ -208,6 +210,25 @@ impl<'source> TsonDeserializer<'source> {
         Ok(text)
     }
 
+    fn identifier(&mut self) -> Result<&'source str, Error> {
+        let next_token = self.next()?;
+        let text = match next_token {
+            Token::Text(text) => text,
+            Token::Dont | Token::InTheory => {
+                self.prefix_token = Some(next_token);
+                self.text()?
+            }
+            token => {
+                return Err(Error::InvalidValue(
+                    token.to_string(),
+                    String::from("text, dont, in theory"),
+                ));
+            }
+        };
+
+        Ok(text)
+    }
+
     fn collapse_that_shit(&mut self) -> Result<Cow<'source, str>, Error> {
         let start_text = self.text()?;
 
@@ -253,7 +274,7 @@ macro_rules! deserialize_value {
 impl<'de> Deserializer<'de> for &mut TsonDeserializer<'de> {
     type Error = Error;
 
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
@@ -367,7 +388,7 @@ impl<'de> Deserializer<'de> for &mut TsonDeserializer<'de> {
 
     fn deserialize_newtype_struct<V>(
         self,
-        name: &'static str,
+        _name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
@@ -387,7 +408,7 @@ impl<'de> Deserializer<'de> for &mut TsonDeserializer<'de> {
         Ok(result)
     }
 
-    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
@@ -396,8 +417,8 @@ impl<'de> Deserializer<'de> for &mut TsonDeserializer<'de> {
 
     fn deserialize_tuple_struct<V>(
         self,
-        name: &'static str,
-        len: usize,
+        _name: &'static str,
+        _len: usize,
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
@@ -419,8 +440,8 @@ impl<'de> Deserializer<'de> for &mut TsonDeserializer<'de> {
 
     fn deserialize_struct<V>(
         self,
-        name: &'static str,
-        fields: &'static [&'static str],
+        _name: &'static str,
+        _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
@@ -431,8 +452,8 @@ impl<'de> Deserializer<'de> for &mut TsonDeserializer<'de> {
 
     fn deserialize_enum<V>(
         self,
-        name: &'static str,
-        variants: &'static [&'static str],
+        _name: &'static str,
+        _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
@@ -445,24 +466,224 @@ impl<'de> Deserializer<'de> for &mut TsonDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        let next_token = self.next()?;
-        let text = match next_token {
-            Token::Text(text) => text,
-            Token::Dont | Token::InTheory => {
-                self.prefix_token = Some(next_token);
-                self.text()?
-            }
-            token => {
-                return Err(Error::InvalidValue(
-                    token.to_string(),
-                    String::from("text, dont, in theory"),
-                ));
-            }
-        };
+        let text = self.identifier()?;
         visitor.visit_borrowed_str(text)
     }
 
-    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_ignored_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        unimplemented!()
+    }
+}
+
+struct MapAccessDeserializer<'de, 'a> {
+    deserializer: &'a mut TsonDeserializer<'de>,
+}
+
+macro_rules! deserialize_key_value {
+    ($fn_name:ident, $visitor:ident, $expected:expr) => {
+        fn $fn_name<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            let text = self.deserializer.identifier()?;
+            visitor.$visitor(
+                text.parse()
+                    .map_err(|_| Error::InvalidValue(text.to_string(), String::from($expected)))?,
+            )
+        }
+    };
+}
+
+impl<'de, 'a> Deserializer<'de> for &mut MapAccessDeserializer<'de, 'a> {
+    type Error = Error;
+
+    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        unimplemented!()
+    }
+
+    deserialize_key_value!(deserialize_i8, visit_i8, "i8");
+    deserialize_key_value!(deserialize_i16, visit_i16, "i16");
+    deserialize_key_value!(deserialize_i32, visit_i32, "i32");
+    deserialize_key_value!(deserialize_i64, visit_i64, "i64");
+    deserialize_key_value!(deserialize_u8, visit_u8, "u8");
+    deserialize_key_value!(deserialize_u16, visit_u16, "u16");
+    deserialize_key_value!(deserialize_u32, visit_u32, "u32");
+    deserialize_key_value!(deserialize_u64, visit_u64, "u64");
+    deserialize_key_value!(deserialize_f32, visit_f32, "f32");
+    deserialize_key_value!(deserialize_f64, visit_f64, "f64");
+    deserialize_key_value!(deserialize_char, visit_char, "char");
+
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let text = self.deserializer.identifier()?;
+        if text == "true" {
+            visitor.visit_bool(true)
+        } else if text == "false" {
+            visitor.visit_bool(false)
+        } else {
+            Err(Error::InvalidValue(
+                text.to_owned(),
+                String::from("true, false"),
+            ))
+        }
+    }
+
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let text = self.deserializer.identifier()?;
+        visitor.visit_borrowed_str(text)
+    }
+
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_str(visitor)
+    }
+
+    fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn deserialize_byte_buf<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.deserializer.reader.peek() == Some(&Token::InTheory) {
+            visitor.visit_none()
+        } else {
+            visitor.visit_some(self)
+        }
+    }
+
+    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let next_token = self.deserializer.identifier()?;
+        if next_token != "unit" {
+            return Err(Error::InvalidType(
+                next_token.to_string(),
+                String::from("unit"),
+            ));
+        };
+        visitor.visit_unit()
+    }
+
+    fn deserialize_unit_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let next_token = self.deserializer.identifier()?;
+        if next_token != name {
+            return Err(Error::InvalidType(
+                next_token.to_string(),
+                String::from(name),
+            ));
+        };
+        visitor.visit_unit()
+    }
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_seq<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn deserialize_tuple<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn deserialize_map<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::KeyMustBeStringable)
+    }
+
+    fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserializer.deserialize_identifier(visitor)
+    }
+
+    fn deserialize_ignored_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
@@ -485,7 +706,10 @@ impl<'de, 'a> MapAccess<'de> for TsonMapAccess<'de, 'a> {
         if next_token.is_none() || next_token == Some(&Token::OhYeah) {
             Ok(None)
         } else {
-            seed.deserialize(&mut *self.deserializer).map(Some)
+            seed.deserialize(&mut MapAccessDeserializer {
+                deserializer: &mut *self.deserializer,
+            })
+            .map(Some)
         }
     }
 
@@ -530,7 +754,7 @@ impl<'de, 'a> VariantAccess<'de> for TsonEnumAccess<'de, 'a> {
         seed.deserialize(&mut *self.deserializer)
     }
 
-    fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    fn tuple_variant<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
@@ -539,7 +763,7 @@ impl<'de, 'a> VariantAccess<'de> for TsonEnumAccess<'de, 'a> {
 
     fn struct_variant<V>(
         self,
-        fields: &'static [&'static str],
+        _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
