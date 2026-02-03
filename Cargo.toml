@@ -1,0 +1,17 @@
+[package]
+name = "tysonscript-object-notation"
+version = "0.1.0"
+authors = ["Isaac Mills <rooster0055@protonmail.com>"]
+categories = ["encoding", "web-programming", "parser-implementations"]
+description = "A dead simple config file format that just makes sense."
+edition = "2024"
+license = "WTFPL"
+keywords = ["serde", "serialization", "tson", "tysoncloud", "tysonscript"]
+repository = "https://github.com/StratusFearMe21/tysonscript-object-notation"
+
+[dependencies]
+serde_core = "1.0.228"
+thiserror = "2.0.18"
+
+[dev-dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
