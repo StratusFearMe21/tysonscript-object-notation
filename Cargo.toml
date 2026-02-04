@@ -10,8 +10,11 @@ keywords = ["serde", "serialization", "tson", "tysoncloud", "tysonscript"]
 repository = "https://github.com/StratusFearMe21/tysonscript-object-notation"
 
 [dependencies]
+itoa = "1.0.17"
+logos = "0.16.1"
 serde_core = "1.0.228"
 thiserror = "2.0.18"
+zmij = "1.0.19"
 
 [dev-dependencies]
 criterion = "0.8.1"

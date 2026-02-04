@@ -22,6 +22,8 @@ pub enum Error {
     KeyMustBeStringable,
     #[error("Map keys cannot be any kind of compound type")]
     AlreadyCalled,
+    #[error("Serialized floats must be finite")]
+    FloatMustBeFinite,
     #[error("Error during serialization: `{0}`")]
     Custom(String),
 }
@@ -33,16 +35,6 @@ impl ser::Error for Error {
     {
         Self::Custom(msg.to_string())
     }
-}
-
-macro_rules! serialize_value {
-    ($fn_name:ident, $v:ty) => {
-        fn $fn_name(self, v: $v) -> Result<Self::Ok, Self::Error> {
-            self.prefix_that_shit(b" ")?;
-            self.writer.write_fmt(format_args!("{}", v))?;
-            self.suffix_that_shit()
-        }
-    };
 }
 
 impl<'a, W: Write> TsonSerializer<W> {
@@ -112,6 +104,32 @@ impl<'a, W: Write> TsonSerializer<W> {
     }
 }
 
+macro_rules! serialize_integer {
+    ($fn_name:ident, $v:ty) => {
+        fn $fn_name(self, v: $v) -> Result<Self::Ok, Self::Error> {
+            self.prefix_that_shit(b" ")?;
+            self.writer
+                .write_all(itoa::Buffer::new().format(v).as_bytes())?;
+            self.suffix_that_shit()
+        }
+    };
+}
+
+macro_rules! serialize_float {
+    ($fn_name:ident, $v:ty) => {
+        fn $fn_name(self, v: $v) -> Result<Self::Ok, Self::Error> {
+            self.prefix_that_shit(b" ")?;
+            if v.is_finite() {
+                self.writer
+                    .write_all(zmij::Buffer::new().format_finite(v).as_bytes())?;
+            } else {
+                return Err(Error::FloatMustBeFinite);
+            }
+            self.suffix_that_shit()
+        }
+    };
+}
+
 impl<'a, W: Write> Serializer for &'a mut TsonSerializer<W> {
     type Ok = ();
 
@@ -124,18 +142,30 @@ impl<'a, W: Write> Serializer for &'a mut TsonSerializer<W> {
     type SerializeStruct = Self;
     type SerializeStructVariant = Self;
 
-    serialize_value!(serialize_i8, i8);
-    serialize_value!(serialize_i16, i16);
-    serialize_value!(serialize_i32, i32);
-    serialize_value!(serialize_i64, i64);
-    serialize_value!(serialize_u8, u8);
-    serialize_value!(serialize_u16, u16);
-    serialize_value!(serialize_u32, u32);
-    serialize_value!(serialize_u64, u64);
-    serialize_value!(serialize_f32, f32);
-    serialize_value!(serialize_f64, f64);
-    serialize_value!(serialize_char, char);
-    serialize_value!(serialize_str, &str);
+    serialize_integer!(serialize_i8, i8);
+    serialize_integer!(serialize_i16, i16);
+    serialize_integer!(serialize_i32, i32);
+    serialize_integer!(serialize_i64, i64);
+    serialize_integer!(serialize_u8, u8);
+    serialize_integer!(serialize_u16, u16);
+    serialize_integer!(serialize_u32, u32);
+    serialize_integer!(serialize_u64, u64);
+
+    serialize_float!(serialize_f32, f32);
+    serialize_float!(serialize_f64, f64);
+
+    fn serialize_char(self, v: char) -> Result<Self::Ok, Self::Error> {
+        self.prefix_that_shit(b" ")?;
+        let mut ch = [0; 4];
+        self.writer.write_all(v.encode_utf8(&mut ch).as_bytes())?;
+        self.suffix_that_shit()
+    }
+
+    fn serialize_str(self, v: &str) -> Result<Self::Ok, Self::Error> {
+        self.prefix_that_shit(b" ")?;
+        self.writer.write_all(v.as_bytes())?;
+        self.suffix_that_shit()
+    }
 
     fn serialize_bool(self, v: bool) -> Result<Self::Ok, Self::Error> {
         if !v {

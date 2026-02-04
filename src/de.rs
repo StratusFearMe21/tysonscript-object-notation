@@ -1,5 +1,6 @@
-use std::{borrow::Cow, fmt::Display, iter::Peekable, str::SplitWhitespace};
+use std::{fmt::Display, iter::Peekable};
 
+use logos::{Lexer, Logos};
 use serde_core::{
     Deserializer,
     de::{self, EnumAccess, Expected, MapAccess, SeqAccess, Unexpected, VariantAccess, Visitor},
@@ -74,16 +75,22 @@ impl de::Error for Error {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Logos, Debug, PartialEq, Clone, Copy)]
+#[logos(skip(r"((fuckin)?[ \t\r\n\f]+)+"))]
 pub enum Token<'source> {
     // Prefixes
+    #[token("dont")]
     Dont,
+    #[regex(r"in[ \t\r\n\f]+(fuckin[ \t\r\n\f]+)?theory")]
     InTheory,
 
     // Suffixes
+    #[regex(r"that[ \t\r\n\f]+(fuckin[ \t\r\n\f]+)?shit")]
     ThatShit,
+    #[regex(r"oh[ \t\r\n\f]+(fuckin[ \t\r\n\f]+)?yeah")]
     OhYeah,
 
+    #[regex(r"[^ \t\r\n\f]+")]
     Text(&'source str),
 }
 
@@ -99,52 +106,25 @@ impl<'source> Display for Token<'source> {
     }
 }
 
-pub struct SplitWhitespaceAndFuckin<'source>(SplitWhitespace<'source>);
-
-impl<'source> Iterator for SplitWhitespaceAndFuckin<'source> {
-    type Item = &'source str;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let next = self.0.next()?;
-
-            if next != "fuckin" {
-                return Some(next);
-            }
-        }
-    }
-}
-
-pub struct TsonLexer<'source>(Peekable<SplitWhitespaceAndFuckin<'source>>);
+pub struct TsonLexer<'source>(Lexer<'source, Token<'source>>);
 
 impl<'source> Iterator for TsonLexer<'source> {
     type Item = Token<'source>;
 
+    #[cfg(not(debug_assertions))]
     fn next(&mut self) -> Option<Self::Item> {
-        let next = self.0.next()?;
+        Some(unsafe { self.0.next()?.unwrap_unchecked() })
+    }
 
-        match next {
-            "that" if self.0.peek() == Some(&"shit") => {
-                self.0.next();
-                return Some(Token::ThatShit);
-            }
-            "dont" => return Some(Token::Dont),
-            "oh" if self.0.peek() == Some(&"yeah") => {
-                self.0.next();
-                return Some(Token::OhYeah);
-            }
-            "in" if self.0.peek() == Some(&"theory") => {
-                self.0.next();
-                return Some(Token::InTheory);
-            }
-            text => return Some(Token::Text(text)),
-        }
+    #[cfg(debug_assertions)]
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(self.0.next()?.unwrap())
     }
 }
 
 impl<'source> TsonLexer<'source> {
     fn new(source: &'source str) -> TsonLexer<'source> {
-        TsonLexer(SplitWhitespaceAndFuckin(source.split_whitespace()).peekable())
+        TsonLexer(Token::lexer(source))
     }
 }
 
@@ -155,10 +135,6 @@ pub struct TsonDeserializer<'a> {
 
 impl<'source> TsonDeserializer<'source> {
     pub fn new(str: &'source str) -> Self {
-        // let reader = TsonLexer::new(str);
-        // for t in reader {
-        //     dbg!(t);
-        // }
         let reader = TsonLexer::new(str).peekable();
         Self {
             reader,
@@ -228,31 +204,6 @@ impl<'source> TsonDeserializer<'source> {
 
         Ok(text)
     }
-
-    fn collapse_that_shit(&mut self) -> Result<Cow<'source, str>, Error> {
-        let start_text = self.text()?;
-
-        let start_ptr = start_text.as_ptr();
-        let mut end_ptr = unsafe { start_text.as_ptr().offset(start_text.len() as isize) };
-
-        loop {
-            let next_token = self.next()?;
-            match next_token {
-                Token::Text(text) => {
-                    end_ptr = unsafe { text.as_ptr().offset(text.len() as isize) };
-                }
-                Token::ThatShit => break,
-                _ => {}
-            }
-        }
-
-        Ok(Cow::Borrowed(unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                start_ptr,
-                end_ptr as usize - start_ptr as usize,
-            ))
-        }))
-    }
 }
 
 macro_rules! deserialize_value {
@@ -312,10 +263,28 @@ impl<'de> Deserializer<'de> for &mut TsonDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        match self.collapse_that_shit()? {
-            Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
-            Cow::Owned(s) => visitor.visit_string(s),
+        let start_text = self.text()?;
+
+        let start_ptr = start_text.as_ptr();
+        let mut end_ptr = unsafe { start_text.as_ptr().offset(start_text.len() as isize) };
+
+        loop {
+            let next_token = self.next()?;
+            match next_token {
+                Token::Text(text) => {
+                    end_ptr = unsafe { text.as_ptr().offset(text.len() as isize) };
+                }
+                Token::ThatShit => break,
+                _ => {}
+            }
         }
+
+        visitor.visit_borrowed_str(unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                start_ptr,
+                end_ptr as usize - start_ptr as usize,
+            ))
+        })
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -743,8 +712,7 @@ impl<'de, 'a> VariantAccess<'de> for TsonEnumAccess<'de, 'a> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
-        self.deserializer.that_shit()?;
-        Ok(())
+        self.deserializer.that_shit()
     }
 
     fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
